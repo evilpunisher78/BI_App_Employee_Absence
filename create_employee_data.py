@@ -5,7 +5,7 @@ import random
 
 # Parameter
 num_employees = 50
-total_entries = 200
+total_entries = 300
 start_date = datetime(2023, 1, 1)
 end_date = datetime(2023, 12, 31)
 
@@ -22,7 +22,7 @@ urlaub_tage_pro_mitarbeiter = {emp_id: random.randint(28, 33) for emp_id in empl
 # Schritt 2: Teilen Sie die Urlaubstage in mehrere Urlaubseinträge auf (z.B. 1 bis 3 Urlaubsperioden)
 urlaub_entries_per_mitarbeiter = {}
 for emp_id, urlaub_tage in urlaub_tage_pro_mitarbeiter.items():
-    num_periods = random.randint(1, 3)  # Jeder hat zwischen 1 und 3 Urlaubsperioden
+    num_periods = random.randint(2, 5)  # Jeder hat zwischen 1 und 3 Urlaubsperioden
     tage_pro_period = [urlaub_tage // num_periods] * num_periods
     for i in range(urlaub_tage % num_periods):
         tage_pro_period[i] += 1  # Verteile die restlichen Tage
@@ -116,7 +116,7 @@ random.shuffle(data)
 
 # Schritt 8: Erstelle DataFrame und exportiere als CSV
 df = pd.DataFrame(data)
-df.to_csv('abwesenheiten.csv', index=False, encoding='utf-8-sig')
+df.to_csv('employee_absence.csv', index=False, encoding='utf-8-sig')
 
-print("CSV-Datei 'abwesenheiten.csv' wurde erfolgreich erstellt.")
+print("CSV-Datei 'employee_absence.csv' wurde erfolgreich erstellt.")
 print(f"Gesamtanzahl der Einträge: {len(df)}")
