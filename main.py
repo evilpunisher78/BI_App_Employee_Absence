@@ -1,3 +1,12 @@
+# -*- coding: utf-8 -*-
+"""
+Analyse-Anwendung für Mitarbeiter-Abwesenheiten
+Erstellt am 4. Januar 2025
+
+@author: Helena, Katja
+"""
+
+import os
 import dash
 from dash import dcc, html, Input, Output, State, dash_table
 import pandas as pd
@@ -5,185 +14,440 @@ import plotly.express as px
 from datetime import date
 import uuid
 import webbrowser
+import io
+import base64
 
-# Initialize Dash app
+CSV_DATEI = "abwesenheitsaufzeichnungen.csv"
+
+# Wir definieren die Wochentagsnamen und Monatsnamen auf Deutsch
+WOCHENTAGE = ["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag"]
+MONATE     = [
+    "Januar", "Februar", "März", "April", "Mai", "Juni", 
+    "Juli", "August", "September", "Oktober", "November", "Dezember"
+]
+
+# Für den "mapping"-Schritt:
+wochentag_map = {
+    0: "Montag",
+    1: "Dienstag",
+    2: "Mittwoch",
+    3: "Donnerstag",
+    4: "Freitag",
+    5: "Samstag",
+    6: "Sonntag"
+}
+
+monat_map = {
+    1: "Januar",
+    2: "Februar",
+    3: "März",
+    4: "April",
+    5: "Mai",
+    6: "Juni",
+    7: "Juli",
+    8: "August",
+    9: "September",
+    10: "Oktober",
+    11: "November",
+    12: "Dezember"
+}
+
+# ----------------------------------------------------
+# (A) CSV einlesen, falls vorhanden
+# ----------------------------------------------------
+if os.path.exists(CSV_DATEI):
+    abwesenheiten = pd.read_csv(
+        CSV_DATEI, parse_dates=["Startdatum", "Enddatum"]
+    )
+    # Uhrzeit auf 00:00 normalisieren
+    abwesenheiten["Startdatum"] = abwesenheiten["Startdatum"].dt.normalize()
+    abwesenheiten["Enddatum"]   = abwesenheiten["Enddatum"].dt.normalize()
+else:
+    abwesenheiten = pd.DataFrame(columns=["Mitarbeiter-ID", "Name", "Startdatum", "Enddatum", "Grund"])
+
+# ----------------------------------------------------
+# (B) Hilfsfunktionen
+# ----------------------------------------------------
+def expand_abwesenheiten(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Erzeugt ein "expandiertes" DataFrame mit einer Zeile pro Tag.
+    """
+    all_rows = []
+    for _, row in df.iterrows():
+        start = row["Startdatum"]
+        end   = row["Enddatum"]
+        if pd.isna(start) or pd.isna(end):
+            continue
+
+        date_range = pd.date_range(start=start, end=end, freq="D")
+        for single_date in date_range:
+            all_rows.append({
+                "Mitarbeiter-ID": row["Mitarbeiter-ID"],
+                "Name": row["Name"],
+                "Datum": single_date,
+                "Grund": row["Grund"]
+            })
+
+    expanded = pd.DataFrame(all_rows)
+    if not expanded.empty:
+        # Hier mappen wir numeric weekday -> deutscher String
+        expanded["Wochentag"] = expanded["Datum"].dt.weekday.map(wochentag_map)
+        # numeric month -> deutscher String
+        expanded["Monat"]     = expanded["Datum"].dt.month.map(monat_map)
+    return expanded
+
+def generate_figures_from_expanded(expanded_df: pd.DataFrame):
+    """
+    Erzeugt 3 Plotly-Figuren (Grund-, Wochentag-, Monatstrends)
+    aus dem "expandierten" DataFrame in deutscher Sprache.
+    """
+    if expanded_df.empty:
+        dummy = px.bar(title="Keine Daten verfügbar")
+        return dummy, dummy, dummy
+
+    # --- 1) Grundtrends ---
+    grund_trends = expanded_df.groupby("Grund")["Datum"].count().reset_index(name="Tage")
+    grund_figure = px.bar(
+        grund_trends,
+        x="Grund",
+        y="Tage",
+        color="Grund",
+        title="Abwesenheitstrends nach Grund (Tage)"
+    )
+    grund_figure.update_layout(legend_title_text="Abwesenheitsgrund")
+
+    # --- 2) Wochentagtrends ---
+    wochentag_trends = expanded_df.groupby("Wochentag")["Datum"].count().reset_index(name="Tage")
+    # Damit die Sortierung Montag->Sonntag ist:
+    wochentag_trends["sort_index"] = wochentag_trends["Wochentag"].apply(lambda x: WOCHENTAGE.index(x))
+    wochentag_trends = wochentag_trends.sort_values("sort_index")
+    wochentag_figure = px.bar(
+        wochentag_trends,
+        x="Wochentag",
+        y="Tage",
+        color="Wochentag",
+        title="Abwesenheitstrends nach Wochentag (deutsch)"
+    )
+    wochentag_figure.update_layout(legend_title_text="Wochentage")
+
+    # --- 3) Monatstrends ---
+    monat_trends = expanded_df.groupby("Monat")["Datum"].count().reset_index(name="Tage")
+    # Auch hier sortieren: Januar->Dezember
+    monat_trends["sort_index"] = monat_trends["Monat"].apply(lambda m: MONATE.index(m))
+    monat_trends = monat_trends.sort_values("sort_index")
+    monat_figure = px.bar(
+        monat_trends,
+        x="Monat",
+        y="Tage",
+        color="Monat",
+        title="Abwesenheitstrends nach Monat (deutsch)"
+    )
+    monat_figure.update_layout(legend_title_text="Monate")
+
+    return grund_figure, wochentag_figure, monat_figure
+
+# Falls es bereits Einträge gibt, berechnen wir "Fehltage" für die Tabelle
+if not abwesenheiten.empty:
+    abwesenheiten["Fehltage"] = (abwesenheiten["Enddatum"] - abwesenheiten["Startdatum"]).dt.days + 1
+
+# ----------------------------------------------------
+# (C) Dash-App
+# ----------------------------------------------------
 app = dash.Dash(__name__)
-app.title = "Employee Absence Management"
+app.title = "Mitarbeiter-Abwesenheitsmanagement (Deutsch)"
 
-# Initialize data
-initial_employees = pd.DataFrame(columns=["employee_id", "name", "email", "department"])
-initial_absences = pd.DataFrame(columns=[
-    "absence_id", "employee_id", "absence_start", "absence_end", "absence_duration", "absence_reason", "absence_type"
-])
+global_style = {
+    "fontFamily": "Arial, sans-serif",
+    "backgroundColor": "#f4f7fb",
+    "color": "#333",
+    "margin": "0",
+    "padding": "0",
+}
 
-# App layout
-app.layout = html.Div([
-    html.H1("Employee Absence Management", style={"textAlign": "center"}),
+abwesenheitsgruende = ["Krank", "Urlaub", "Persönliche Gründe", "Fortbildung"]
 
-    # Add Employee Section
-    html.Div([
-        html.H3("Add Employee"),
-        html.Div([
-            html.Label("Name"), dcc.Input(id="name", type="text", placeholder="Name"),
-            html.Label("Email"), dcc.Input(id="email", type="email", placeholder="Email"),
-            html.Label("Department"), dcc.Input(id="department", type="text", placeholder="Department")
-        ], style={"display": "flex", "gap": "10px"}),
-        html.Button("Add Employee", id="add_employee", n_clicks=0),
-        html.Div(id="employee_feedback", style={"color": "green", "marginTop": "10px"})
-    ], style={"marginBottom": "20px"}),
+# Start: expandieren & Diagramme erzeugen
+expanded_initial = expand_abwesenheiten(abwesenheiten)
+grund_fig_init, wochentag_fig_init, monat_fig_init = generate_figures_from_expanded(expanded_initial)
 
-    # Add Absence Section
-    html.Div([
-        html.H3("Add Absence"),
-        html.Label("Select Employee"),
-        dcc.Dropdown(id="select_employee", options=[], placeholder="Select Employee"),
-        html.Div([
-            html.Label("Absence Start Date"), dcc.DatePickerSingle(id="absence_start", date=date.today()),
-            html.Label("Absence End Date"), dcc.DatePickerSingle(id="absence_end", date=date.today()),
-            html.Label("Absence Reason"), dcc.Input(id="absence_reason", type="text", placeholder="Reason"),
-            html.Label("Absence Type"), dcc.Input(id="absence_type", type="text", placeholder="Type")
-        ], style={"display": "flex", "gap": "10px"}),
-        html.Button("Add Absence", id="add_absence", n_clicks=0),
-        html.Div(id="absence_feedback", style={"color": "green", "marginTop": "10px"})
-    ], style={"marginBottom": "20px"}),
-
-    # Save and Load Section
-    html.Div([
-        html.H3("Save and Load Data"),
-        html.Button("Save Employees as CSV", id="save_employees"),
-        html.Div(id="employees_feedback_message", style={"marginTop": "10px", "display": "inline-block", "marginLeft": "10px"}),
-        dcc.Upload(
-            id="upload_employees", children=html.Button("Reimport Employees (CSV)"),
-            multiple=False
+app.layout = html.Div(
+    style={"backgroundColor": global_style["backgroundColor"], "padding": "20px", "maxWidth": "1200px", "margin": "auto"},
+    children=[
+        # Titel
+        html.H1(
+            "Mitarbeiter-Abwesenheitsmanagement",
+            style={"textAlign": "center", "color": "#0056b3", "fontFamily": global_style["fontFamily"]},
         ),
-        html.Button("Save Absences as CSV", id="save_absences"),
-        html.Div(id="absences_feedback_message", style={"marginTop": "10px", "display": "inline-block", "marginLeft": "10px"}),
-        dcc.Upload(
-            id="upload_absences", children=html.Button("Reimport Absences (CSV)"),
-            multiple=False
+        html.H4(
+            "Dieses Dashboard gehört zum Projekt FHD 2025 Modul Wirtschaftsinformatik.",
+            style={"textAlign": "center", "color": "#0056b3"},
+        ),
+
+        # Abschnitt: Abwesenheit hinzufügen
+        html.Div(
+            style={
+                "backgroundColor": "#ffffff",
+                "border": "1px solid #ddd",
+                "borderRadius": "8px",
+                "boxShadow": "0 2px 4px rgba(0, 0, 0, 0.1)",
+                "padding": "20px",
+                "marginBottom": "20px",
+            },
+            children=[
+                html.H3("Abwesenheit hinzufügen", style={"color": "#0056b3"}),
+                html.Div(
+                    style={"display": "flex", "alignItems": "center", "gap": "20px"},
+                    children=[
+                        html.Div(
+                            style={"flex": "1"},
+                            children=[
+                                html.Label("Name", style={"fontWeight": "bold"}),
+                                dcc.Input(
+                                    id="mitarbeiter_name",
+                                    type="text",
+                                    placeholder="Name des Mitarbeiters",
+                                    style={"width": "100%"}
+                                ),
+                            ],
+                        ),
+                        html.Div(
+                            style={"flex": "1"},
+                            children=[
+                                html.Label("Startdatum", style={"fontWeight": "bold"}),
+                                dcc.DatePickerSingle(
+                                    id="start_datum",
+                                    date=date.today(),
+                                    style={"width": "100%"}
+                                ),
+                            ],
+                        ),
+                        html.Div(
+                            style={"flex": "1"},
+                            children=[
+                                html.Label("Enddatum", style={"fontWeight": "bold"}),
+                                dcc.DatePickerSingle(
+                                    id="end_datum",
+                                    date=date.today(),
+                                    style={"width": "100%"}
+                                ),
+                            ],
+                        ),
+                        html.Div(
+                            style={"flex": "1.5"},
+                            children=[
+                                html.Label("Grund", style={"fontWeight": "bold"}),
+                                dcc.Dropdown(
+                                    id="grund_dropdown",
+                                    options=[{"label": g, "value": g} for g in abwesenheitsgruende]
+                                    + [{"label": "Andere", "value": "Andere"}],
+                                    placeholder="Grund auswählen",
+                                    style={"width": "100%"}
+                                ),
+                                dcc.Input(
+                                    id="anderer_grund",
+                                    type="text",
+                                    placeholder="Anderen Grund angeben",
+                                    style={"display": "none", "width": "100%"}
+                                ),
+                            ],
+                        ),
+                    ],
+                ),
+                html.Button(
+                    "Abwesenheit hinzufügen",
+                    id="abwesenheit_hinzufuegen",
+                    n_clicks=0,
+                    style={
+                        "backgroundColor": "#0056b3",
+                        "color": "#fff",
+                        "border": "none",
+                        "borderRadius": "4px",
+                        "padding": "10px 15px",
+                        "cursor": "pointer",
+                        "marginTop": "20px",
+                    },
+                ),
+                html.Div(id="abwesenheit_rueckmeldung", style={"color": "green", "marginTop": "10px"}),
+            ],
+        ),
+
+        # Tabelle (1 Zeile pro Abwesenheit)
+        html.Div(
+            style={
+                "backgroundColor": "#ffffff",
+                "border": "1px solid #ddd",
+                "borderRadius": "8px",
+                "boxShadow": "0 2px 4px rgba(0, 0, 0, 0.1)",
+                "padding": "20px",
+                "marginBottom": "20px",
+            },
+            children=[
+                html.H3("Abwesenheitsaufzeichnungen", style={"color": "#0056b3"}),
+                dash_table.DataTable(
+                    id="abwesenheit_tabelle",
+                    columns=[{"name": c, "id": c} for c in abwesenheiten.columns],
+                    style_table={"overflowX": "auto"},
+                    data=abwesenheiten.to_dict("records"),
+                ),
+                html.Div(
+                    style={"marginTop": "20px", "display": "flex", "gap": "20px"},
+                    children=[
+                        html.Button(
+                            "CSV herunterladen",
+                            id="download_csv",
+                            style={
+                                "backgroundColor": "#0056b3",
+                                "color": "#fff",
+                                "border": "none",
+                                "borderRadius": "4px",
+                                "padding": "10px 15px"
+                            }
+                        ),
+                        html.Button(
+                            "Excel herunterladen",
+                            id="download_excel",
+                            style={
+                                "backgroundColor": "#0056b3",
+                                "color": "#fff",
+                                "border": "none",
+                                "borderRadius": "4px",
+                                "padding": "10px 15px"
+                            }
+                        )
+                    ]
+                ),
+                dcc.Download(id="csv_download"),
+                dcc.Download(id="excel_download"),
+            ],
+        ),
+
+        # Diagramme
+        html.Div(
+            style={
+                "backgroundColor": "#ffffff",
+                "border": "1px solid #ddd",
+                "borderRadius": "8px",
+                "boxShadow": "0 2px 4px rgba(0, 0, 0, 0.1)",
+                "padding": "20px",
+            },
+            children=[
+                html.H3("Abwesenheitstrends", style={"color": "#0056b3"}),
+                dcc.Graph(id="abwesenheit_trends", figure=grund_fig_init),
+                dcc.Graph(id="wochentag_trends", figure=wochentag_fig_init),
+                dcc.Graph(id="monat_trends", figure=monat_fig_init),
+            ],
+        ),
+    ],
+)
+
+# Callback: "Andere Gründe" -> Feld anzeigen
+@app.callback(
+    Output("anderer_grund", "style"),
+    Input("grund_dropdown", "value"),
+    prevent_initial_call=True
+)
+def toggle_anderen_grund_feld(grund):
+    if grund == "Andere":
+        return {"display": "block", "width": "100%"}
+    return {"display": "none"}
+
+# Callback: Neue Abwesenheit hinzufügen & Diagramme aktualisieren
+@app.callback(
+    [
+        Output("abwesenheit_rueckmeldung", "children"),
+        Output("abwesenheit_tabelle", "data"),
+        Output("abwesenheit_trends", "figure"),
+        Output("wochentag_trends", "figure"),
+        Output("monat_trends", "figure"),
+    ],
+    Input("abwesenheit_hinzufuegen", "n_clicks"),
+    [
+        State("mitarbeiter_name", "value"),
+        State("start_datum", "date"),
+        State("end_datum", "date"),
+        State("grund_dropdown", "value"),
+        State("anderer_grund", "value"),
+    ],
+    prevent_initial_call=True
+)
+def abwesenheit_hinzufuegen(n_clicks, name, start_datum, end_datum, grund, anderer_grund):
+    global abwesenheiten
+
+    if not name or not start_datum or not end_datum or not grund:
+        return (
+            "Alle Felder müssen ausgefüllt werden!",
+            abwesenheiten.to_dict("records"),
+            px.bar(title="Keine Daten verfügbar"),
+            px.bar(title="Keine Daten verfügbar"),
+            px.bar(title="Keine Daten verfügbar"),
         )
-    ], style={"marginBottom": "20px"}),
 
-    # Tables and Graph
-    dcc.Tabs([
-        dcc.Tab(label="Employees", children=[
-            dash_table.DataTable(id="employee_table", style_table={"overflowX": "auto"})
-        ]),
-        dcc.Tab(label="Absences", children=[
-            dash_table.DataTable(id="absence_table", style_table={"overflowX": "auto"})
-        ]),
-        dcc.Tab(label="Absence Trends", children=[
-            dcc.Graph(id="absence_graph")
-        ])
-    ])
-])
+    # Datum normalisieren
+    start_dt = pd.to_datetime(start_datum).normalize()
+    end_dt   = pd.to_datetime(end_datum).normalize()
 
-# Global Data
-employees = initial_employees.copy()
-absences = initial_absences.copy()
+    if start_dt > end_dt:
+        return (
+            "Das Startdatum darf nicht nach dem Enddatum liegen!",
+            abwesenheiten.to_dict("records"),
+            px.bar(title="Keine Daten verfügbar"),
+            px.bar(title="Keine Daten verfügbar"),
+            px.bar(title="Keine Daten verfügbar"),
+        )
 
-# Callbacks
-@app.callback(
-    Output("employee_feedback", "children"),
-    Output("select_employee", "options"),
-    Output("employee_table", "data"),
-    Input("add_employee", "n_clicks"),
-    State("name", "value"), State("email", "value"), State("department", "value"),
-    prevent_initial_call="initial_duplicate"
-)
-def add_employee(n_clicks, name, email, department):
-    global employees
-    if not name or not email or not department:
-        return "Please fill in all fields!", [], employees.to_dict("records")
-    
-    new_employee = {
-        "employee_id": f"EMP-{uuid.uuid4().hex[:8]}",
-        "name": name, "email": email, "department": department
+    if grund == "Andere":
+        grund = anderer_grund
+
+    neuer_eintrag = {
+        "Mitarbeiter-ID": f"EMP-{uuid.uuid4().hex[:8]}",
+        "Name": name,
+        "Startdatum": start_dt,
+        "Enddatum": end_dt,
+        "Grund": grund
     }
-    employees = pd.concat([employees, pd.DataFrame([new_employee])], ignore_index=True)
-    employee_options = [{"label": row["name"], "value": row["employee_id"]} for _, row in employees.iterrows()]
-    return "Employee added successfully!", employee_options, employees.to_dict("records")
 
+    abwesenheiten = pd.concat([abwesenheiten, pd.DataFrame([neuer_eintrag])], ignore_index=True)
+    # Fehltage in der Haupt-Tabelle (für DataTable)
+    abwesenheiten["Fehltage"] = (abwesenheiten["Enddatum"] - abwesenheiten["Startdatum"]).dt.days + 1
+
+    # CSV abspeichern
+    abwesenheiten.to_csv(CSV_DATEI, index=False)
+
+    # Diagramme: expandieren und Trends berechnen
+    expanded_df = expand_abwesenheiten(abwesenheiten)
+    grund_fig, wochentag_fig, monat_fig = generate_figures_from_expanded(expanded_df)
+
+    return (
+        "Abwesenheit erfolgreich hinzugefügt!",
+        abwesenheiten.to_dict("records"),  # Tabelle
+        grund_fig,
+        wochentag_fig,
+        monat_fig
+    )
+
+# CSV-Download
 @app.callback(
-    Output("absence_feedback", "children"),
-    Output("absence_table", "data"),
-    Input("add_absence", "n_clicks"),
-    State("select_employee", "value"), State("absence_start", "date"),
-    State("absence_end", "date"), State("absence_reason", "value"), State("absence_type", "value"),
-    prevent_initial_call="initial_duplicate"
-)
-def add_absence(n_clicks, employee_id, absence_start, absence_end, absence_reason, absence_type):
-    global absences
-    if not employee_id or not absence_start or not absence_end or not absence_reason or not absence_type:
-        return "Please fill in all fields!", absences.to_dict("records")
-    
-    # Calculate duration
-    absence_duration = (pd.to_datetime(absence_end) - pd.to_datetime(absence_start)).days
-
-    new_absence = {
-        "absence_id": f"ABS-{uuid.uuid4().hex[:8]}",
-        "employee_id": employee_id,
-        "absence_start": absence_start,
-        "absence_end": absence_end,
-        "absence_duration": absence_duration,
-        "absence_reason": absence_reason,
-        "absence_type": absence_type
-    }
-    absences = pd.concat([absences, pd.DataFrame([new_absence])], ignore_index=True)
-    return "Absence added successfully!", absences.to_dict("records")
-
-@app.callback(
-    Output("absence_graph", "figure"),
-    Input("absence_table", "data"),
+    Output("csv_download", "data"),
+    Input("download_csv", "n_clicks"),
     prevent_initial_call=True
 )
-def update_graph(data):
-    df = pd.DataFrame(data)
-    if df.empty:
-        return px.line(title="No absence data available")
-    
-    df["absence_start"] = pd.to_datetime(df["absence_start"])
-    trends = df.groupby("absence_start").sum().reset_index()
-    fig = px.line(trends, x="absence_start", y="absence_duration", title="Absence Trends Over Time",
-                  labels={"absence_start": "Date", "absence_duration": "Total Duration (days)"})
-    return fig
+def download_csv(n_clicks):
+    return dcc.send_data_frame(abwesenheiten.to_csv, "abwesenheitsaufzeichnungen.csv", index=False)
 
-# Callback to save employees data as CSV
+# Excel-Download
 @app.callback(
-    Output("employees_feedback_message", "children"),
-    Input("save_employees", "n_clicks"),
+    Output("excel_download", "data"),
+    Input("download_excel", "n_clicks"),
     prevent_initial_call=True
 )
-def save_employees_as_csv(n_clicks):
-    if n_clicks is None:
-        return ""
-    
-    # Save employees data as CSV
-    try:
-        employees.to_csv("employees.csv", index=False)
-        return "Employee data saved successfully as employees.csv."
-    except Exception as e:
-        return f"Error saving employees data: {str(e)}"
+def download_excel(n_clicks):
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
+        abwesenheiten.to_excel(writer, index=False, sheet_name="Abwesenheiten")
+    buffer.seek(0)
+    encoded_excel = base64.b64encode(buffer.read()).decode()
+    return dict(content=encoded_excel, filename="abwesenheitsaufzeichnungen.xlsx")
 
-# Callback to save absences data as CSV
-@app.callback(
-    Output("absences_feedback_message", "children"),
-    Input("save_absences", "n_clicks"),
-    prevent_initial_call=True
-)
-def save_absences_as_csv(n_clicks):
-    if n_clicks is None:
-        return ""
-    
-    # Save absences data as CSV
-    try:
-        absences.to_csv("absences.csv", index=False)
-        return "Absences data saved successfully as absences.csv."
-    except Exception as e:
-        return f"Error saving absences data: {str(e)}"
-    
-# Run the app
 if __name__ == "__main__":
-    # Open the app in the default web browser
     webbrowser.open("http://127.0.0.1:8050/")
     app.run_server(debug=True)
