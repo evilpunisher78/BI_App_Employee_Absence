@@ -21,45 +21,22 @@ CSV_DATEI = "abwesenheitsaufzeichnungen.csv"
 
 # Wir definieren die Wochentagsnamen und Monatsnamen auf Deutsch
 WOCHENTAGE = ["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag"]
-MONATE     = [
-    "Januar", "Februar", "März", "April", "Mai", "Juni", 
+MONATE = [
+    "Januar", "Februar", "März", "April", "Mai", "Juni",
     "Juli", "August", "September", "Oktober", "November", "Dezember"
 ]
 
-# Für den "mapping"-Schritt:
-wochentag_map = {
-    0: "Montag",
-    1: "Dienstag",
-    2: "Mittwoch",
-    3: "Donnerstag",
-    4: "Freitag",
-    5: "Samstag",
-    6: "Sonntag"
-}
-
+wochentag_map = {0: "Montag", 1: "Dienstag", 2: "Mittwoch", 3: "Donnerstag", 4: "Freitag", 5: "Samstag", 6: "Sonntag"}
 monat_map = {
-    1: "Januar",
-    2: "Februar",
-    3: "März",
-    4: "April",
-    5: "Mai",
-    6: "Juni",
-    7: "Juli",
-    8: "August",
-    9: "September",
-    10: "Oktober",
-    11: "November",
-    12: "Dezember"
+    1: "Januar", 2: "Februar", 3: "März", 4: "April", 5: "Mai", 6: "Juni",
+    7: "Juli", 8: "August", 9: "September", 10: "Oktober", 11: "November", 12: "Dezember"
 }
 
 # ----------------------------------------------------
 # (A) CSV einlesen, falls vorhanden
 # ----------------------------------------------------
 if os.path.exists(CSV_DATEI):
-    abwesenheiten = pd.read_csv(
-        CSV_DATEI, parse_dates=["Startdatum", "Enddatum"]
-    )
-    # Uhrzeit auf 00:00 normalisieren
+    abwesenheiten = pd.read_csv(CSV_DATEI, sep=";", parse_dates=["Startdatum", "Enddatum"])
     abwesenheiten["Startdatum"] = abwesenheiten["Startdatum"].dt.normalize()
     abwesenheiten["Enddatum"]   = abwesenheiten["Enddatum"].dt.normalize()
 else:
@@ -70,7 +47,8 @@ else:
 # ----------------------------------------------------
 def expand_abwesenheiten(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Erzeugt ein "expandiertes" DataFrame mit einer Zeile pro Tag.
+    Erzeugt ein "expandiertes" DataFrame mit einer Zeile pro Tag
+    (wichtig für die Diagramme).
     """
     all_rows = []
     for _, row in df.iterrows():
@@ -90,9 +68,7 @@ def expand_abwesenheiten(df: pd.DataFrame) -> pd.DataFrame:
 
     expanded = pd.DataFrame(all_rows)
     if not expanded.empty:
-        # Hier mappen wir numeric weekday -> deutscher String
         expanded["Wochentag"] = expanded["Datum"].dt.weekday.map(wochentag_map)
-        # numeric month -> deutscher String
         expanded["Monat"]     = expanded["Datum"].dt.month.map(monat_map)
     return expanded
 
@@ -105,53 +81,81 @@ def generate_figures_from_expanded(expanded_df: pd.DataFrame):
         dummy = px.bar(title="Keine Daten verfügbar")
         return dummy, dummy, dummy
 
-    # --- 1) Grundtrends ---
+    # Grundtrends
     grund_trends = expanded_df.groupby("Grund")["Datum"].count().reset_index(name="Tage")
     grund_figure = px.bar(
-        grund_trends,
-        x="Grund",
-        y="Tage",
-        color="Grund",
+        grund_trends, x="Grund", y="Tage", color="Grund",
         title="Abwesenheitstrends nach Grund (Tage)"
     )
     grund_figure.update_layout(legend_title_text="Abwesenheitsgrund")
 
-    # --- 2) Wochentagtrends ---
+    # Wochentagtrends
     wochentag_trends = expanded_df.groupby("Wochentag")["Datum"].count().reset_index(name="Tage")
-    # Damit die Sortierung Montag->Sonntag ist:
     wochentag_trends["sort_index"] = wochentag_trends["Wochentag"].apply(lambda x: WOCHENTAGE.index(x))
     wochentag_trends = wochentag_trends.sort_values("sort_index")
     wochentag_figure = px.bar(
-        wochentag_trends,
-        x="Wochentag",
-        y="Tage",
-        color="Wochentag",
+        wochentag_trends, x="Wochentag", y="Tage", color="Wochentag",
         title="Abwesenheitstrends nach Wochentag (deutsch)"
     )
     wochentag_figure.update_layout(legend_title_text="Wochentage")
 
-    # --- 3) Monatstrends ---
+    # Monatstrends
     monat_trends = expanded_df.groupby("Monat")["Datum"].count().reset_index(name="Tage")
-    # Auch hier sortieren: Januar->Dezember
     monat_trends["sort_index"] = monat_trends["Monat"].apply(lambda m: MONATE.index(m))
     monat_trends = monat_trends.sort_values("sort_index")
     monat_figure = px.bar(
-        monat_trends,
-        x="Monat",
-        y="Tage",
-        color="Monat",
+        monat_trends, x="Monat", y="Tage", color="Monat",
         title="Abwesenheitstrends nach Monat (deutsch)"
     )
     monat_figure.update_layout(legend_title_text="Monate")
 
     return grund_figure, wochentag_figure, monat_figure
 
-# Falls es bereits Einträge gibt, berechnen wir "Fehltage" für die Tabelle
+def create_krank_uebersicht_df(df: pd.DataFrame):
+    """
+    Erzeugt ein DataFrame mit aufsummierten Krank-Fehltagen pro Mitarbeiter
+    und hängt eine "Smiley"-Spalte an (optional).
+    Falls keine "Krank"-Einträge existieren, wird ein leeres DataFrame zurückgegeben.
+    """
+    krank_df = df[df["Grund"] == "Krank"]
+    if krank_df.empty:
+        # Keine Krank-Einträge => gib leeres DataFrame zurück
+        return pd.DataFrame(columns=["Mitarbeiter-ID", "Name", "Summe Krank-Fehltage", "Smiley"])
+
+    # Summe Fehltage
+    ma_uebersicht_krank = (
+        krank_df
+        .groupby(["Mitarbeiter-ID", "Name"])["Fehltage"]
+        .sum()
+        .reset_index()
+        .rename(columns={"Fehltage": "Summe Krank-Fehltage"})
+    )
+
+    # Optionale Smileys hinzufügen:
+    def get_smiley(tage):
+        if tage <= 10:
+            return "😄"
+        elif tage <= 20:
+            return "😐"
+        elif tage <= 30:
+            return "😕"
+        else:
+            return "😢"
+
+    ma_uebersicht_krank["Smiley"] = ma_uebersicht_krank["Summe Krank-Fehltage"].apply(get_smiley)
+    return ma_uebersicht_krank
+
+# ----------------------------------------------------
+# (C) Vorab Fehltage in erster Tabelle berechnen & initiale Krank-Übersicht
+# ----------------------------------------------------
 if not abwesenheiten.empty:
     abwesenheiten["Fehltage"] = (abwesenheiten["Enddatum"] - abwesenheiten["Startdatum"]).dt.days + 1
 
+# Jetzt schon die Krank-Übersicht berechnen
+initial_krank_uebersicht_df = create_krank_uebersicht_df(abwesenheiten)
+
 # ----------------------------------------------------
-# (C) Dash-App
+# (D) Dash-App
 # ----------------------------------------------------
 app = dash.Dash(__name__)
 app.title = "Mitarbeiter-Abwesenheitsmanagement (Deutsch)"
@@ -166,7 +170,7 @@ global_style = {
 
 abwesenheitsgruende = ["Krank", "Urlaub", "Persönliche Gründe", "Fortbildung"]
 
-# Start: expandieren & Diagramme erzeugen
+# Diagramme vorinitialisieren
 expanded_initial = expand_abwesenheiten(abwesenheiten)
 grund_fig_init, wochentag_fig_init, monat_fig_init = generate_figures_from_expanded(expanded_initial)
 
@@ -179,7 +183,7 @@ app.layout = html.Div(
             style={"textAlign": "center", "color": "#0056b3", "fontFamily": global_style["fontFamily"]},
         ),
         html.H4(
-            "Dieses Dashboard gehört zum Projekt FHD 2025 Modul Wirtschaftsinformatik.",
+            "Dieses Dashboard gehört zum Projekt FHD 2025 Modul Wirtschaftsinformatik, erstellt von Helena Mustermann und Katja Eppendorfer",
             style={"textAlign": "center", "color": "#0056b3"},
         ),
 
@@ -271,7 +275,7 @@ app.layout = html.Div(
             ],
         ),
 
-        # Tabelle (1 Zeile pro Abwesenheit)
+        # Erste Tabelle (ein Eintrag pro Abwesenheit)
         html.Div(
             style={
                 "backgroundColor": "#ffffff",
@@ -321,6 +325,33 @@ app.layout = html.Div(
             ],
         ),
 
+        # Krank-Übersicht: bereits beim Start befüllt
+        html.Div(
+            style={
+                "backgroundColor": "#ffffff",
+                "border": "1px solid #ddd",
+                "borderRadius": "8px",
+                "boxShadow": "0 2px 4px rgba(0, 0, 0, 0.1)",
+                "padding": "20px",
+                "marginBottom": "20px",
+            },
+            children=[
+                html.H3("Übersicht: Summe Krank-Fehltage pro Mitarbeiter (mit Smiley)", style={"color": "#0056b3"}),
+                dash_table.DataTable(
+                    id="ma_uebersicht_krank_tabelle",
+                    columns=[
+                        {"name": "Mitarbeiter-ID",          "id": "Mitarbeiter-ID"},
+                        {"name": "Name",                    "id": "Name"},
+                        {"name": "Summe Krank-Fehltage",    "id": "Summe Krank-Fehltage"},
+                        {"name": "Smiley",                  "id": "Smiley"},
+                    ],
+                    style_table={"overflowX": "auto"},
+                    # Beim Start: bereits befüllt
+                    data=initial_krank_uebersicht_df.to_dict("records") if not initial_krank_uebersicht_df.empty else []
+                ),
+            ],
+        ),
+
         # Diagramme
         html.Div(
             style={
@@ -351,11 +382,14 @@ def toggle_anderen_grund_feld(grund):
         return {"display": "block", "width": "100%"}
     return {"display": "none"}
 
-# Callback: Neue Abwesenheit hinzufügen & Diagramme aktualisieren
+# ----------------------------------------------------
+# Callback: Neue Abwesenheit hinzufügen & aktualisieren
+# ----------------------------------------------------
 @app.callback(
     [
         Output("abwesenheit_rueckmeldung", "children"),
         Output("abwesenheit_tabelle", "data"),
+        Output("ma_uebersicht_krank_tabelle", "data"),  # Tabelle aktualisieren
         Output("abwesenheit_trends", "figure"),
         Output("wochentag_trends", "figure"),
         Output("monat_trends", "figure"),
@@ -373,23 +407,24 @@ def toggle_anderen_grund_feld(grund):
 def abwesenheit_hinzufuegen(n_clicks, name, start_datum, end_datum, grund, anderer_grund):
     global abwesenheiten
 
+    # Validierung
     if not name or not start_datum or not end_datum or not grund:
         return (
             "Alle Felder müssen ausgefüllt werden!",
             abwesenheiten.to_dict("records"),
+            [],
             px.bar(title="Keine Daten verfügbar"),
             px.bar(title="Keine Daten verfügbar"),
             px.bar(title="Keine Daten verfügbar"),
         )
 
-    # Datum normalisieren
     start_dt = pd.to_datetime(start_datum).normalize()
     end_dt   = pd.to_datetime(end_datum).normalize()
-
     if start_dt > end_dt:
         return (
             "Das Startdatum darf nicht nach dem Enddatum liegen!",
             abwesenheiten.to_dict("records"),
+            [],
             px.bar(title="Keine Daten verfügbar"),
             px.bar(title="Keine Daten verfügbar"),
             px.bar(title="Keine Daten verfügbar"),
@@ -398,8 +433,15 @@ def abwesenheit_hinzufuegen(n_clicks, name, start_datum, end_datum, grund, ander
     if grund == "Andere":
         grund = anderer_grund
 
+    # ID wiederverwenden, falls Name schon existiert
+    existing_row = abwesenheiten[abwesenheiten["Name"] == name].head(1)
+    if not existing_row.empty:
+        mitarbeiter_id = existing_row["Mitarbeiter-ID"].iloc[0]
+    else:
+        mitarbeiter_id = f"EMP-{uuid.uuid4().hex[:8]}"
+
     neuer_eintrag = {
-        "Mitarbeiter-ID": f"EMP-{uuid.uuid4().hex[:8]}",
+        "Mitarbeiter-ID": mitarbeiter_id,
         "Name": name,
         "Startdatum": start_dt,
         "Enddatum": end_dt,
@@ -407,19 +449,22 @@ def abwesenheit_hinzufuegen(n_clicks, name, start_datum, end_datum, grund, ander
     }
 
     abwesenheiten = pd.concat([abwesenheiten, pd.DataFrame([neuer_eintrag])], ignore_index=True)
-    # Fehltage in der Haupt-Tabelle (für DataTable)
     abwesenheiten["Fehltage"] = (abwesenheiten["Enddatum"] - abwesenheiten["Startdatum"]).dt.days + 1
 
     # CSV abspeichern
-    abwesenheiten.to_csv(CSV_DATEI, index=False)
+    abwesenheiten.to_csv(CSV_DATEI, sep=";", index=False)
 
-    # Diagramme: expandieren und Trends berechnen
+    # Neue Krank-Übersicht erzeugen
+    updated_krank_uebersicht_df = create_krank_uebersicht_df(abwesenheiten)
+
+    # Diagramme
     expanded_df = expand_abwesenheiten(abwesenheiten)
     grund_fig, wochentag_fig, monat_fig = generate_figures_from_expanded(expanded_df)
 
     return (
         "Abwesenheit erfolgreich hinzugefügt!",
-        abwesenheiten.to_dict("records"),  # Tabelle
+        abwesenheiten.to_dict("records"),  # 1. Tabelle
+        updated_krank_uebersicht_df.to_dict("records"),  # Krank-Tabelle
         grund_fig,
         wochentag_fig,
         monat_fig
@@ -432,7 +477,7 @@ def abwesenheit_hinzufuegen(n_clicks, name, start_datum, end_datum, grund, ander
     prevent_initial_call=True
 )
 def download_csv(n_clicks):
-    return dcc.send_data_frame(abwesenheiten.to_csv, "abwesenheitsaufzeichnungen.csv", index=False)
+    return dcc.send_data_frame(abwesenheiten.to_csv, "abwesenheitsaufzeichnungen.csv", index=False, sep=";")
 
 # Excel-Download
 @app.callback(
