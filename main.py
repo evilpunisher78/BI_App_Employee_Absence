@@ -10,6 +10,7 @@ import os
 import dash
 from dash import dcc, html, Input, Output, State, dash_table
 import pandas as pd
+import plotly.graph_objects as go
 import plotly.express as px
 from datetime import date
 import uuid
@@ -81,7 +82,7 @@ def generate_figures_from_expanded(expanded_df: pd.DataFrame):
         dummy = px.bar(title="Keine Daten verfügbar")
         return dummy, dummy, dummy
 
-    # Grundtrends
+    # Grundtrends (unverändert)
     grund_trends = expanded_df.groupby("Grund")["Datum"].count().reset_index(name="Tage")
     grund_figure = px.bar(
         grund_trends, x="Grund", y="Tage", color="Grund",
@@ -89,9 +90,8 @@ def generate_figures_from_expanded(expanded_df: pd.DataFrame):
     )
     grund_figure.update_layout(legend_title_text="Abwesenheitsgrund")
 
-    # Wochentagtrends (pro Wochentag und Grund)
+    # Wochentagtrends (unverändert)
     wochentag_trends = expanded_df.groupby(["Wochentag", "Grund"])["Datum"].count().reset_index(name="Tage")
-    # Sortierung entsprechend WOCHENTAGE-Liste
     wochentag_trends["sort_index"] = wochentag_trends["Wochentag"].apply(lambda x: WOCHENTAGE.index(x))
     wochentag_trends = wochentag_trends.sort_values(["sort_index", "Grund"])
     wochentag_figure = px.bar(
@@ -104,19 +104,46 @@ def generate_figures_from_expanded(expanded_df: pd.DataFrame):
     )
     wochentag_figure.update_layout(legend_title_text="Abwesenheitsgrund")
 
-    # Monatstrends (pro Monat und Grund)
+    # Monatstrends (modifiziert)
     monat_trends = expanded_df.groupby(["Monat", "Grund"])["Datum"].count().reset_index(name="Tage")
     monat_trends["sort_index"] = monat_trends["Monat"].apply(lambda m: MONATE.index(m))
     monat_trends = monat_trends.sort_values(["sort_index", "Grund"])
-    monat_figure = px.bar(
-        monat_trends,
-        x="Monat",
-        y="Tage",
-        color="Grund",
+    
+    # Erstelle separate Balken für jeden Monat
+    monat_figure = go.Figure()
+    
+    # Füge für jeden Monat einen eigenen Trace hinzu
+    for monat in MONATE:
+        monat_data = monat_trends[monat_trends["Monat"] == monat]
+        if not monat_data.empty:
+            for grund in monat_data["Grund"].unique():
+                wert = monat_data[monat_data["Grund"] == grund]["Tage"].values[0]
+                monat_figure.add_trace(
+                    go.Bar(
+                        name=f"{monat} - {grund}",
+                        x=[monat],
+                        y=[wert],
+                        legendgroup=monat,
+                        showlegend=True
+                    )
+                )
+
+    # Konfiguriere das Layout
+    monat_figure.update_layout(
+        title="Abwesenheitstrends nach Monat und Grund",
         barmode="group",
-        title="Abwesenheitstrends nach Monat und Grund"
+        xaxis_title="Monat",
+        yaxis_title="Tage",
+        showlegend=True,
+        legend=dict(
+            orientation="h",     # horizontale Legende
+            yanchor="bottom",
+            y=1.02,             # Position über dem Diagramm
+            xanchor="right",
+            x=1,
+            groupclick="toggleitem"  # Ermöglicht Einzelauswahl
+        )
     )
-    monat_figure.update_layout(legend_title_text="Abwesenheitsgrund")
 
     return grund_figure, wochentag_figure, monat_figure
 
