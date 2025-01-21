@@ -2,7 +2,7 @@
 """
 Analyse-Anwendung für Mitarbeiter-Abwesenheiten
 Erstellt am 4. Januar 2025
-
+Letzte Aktualisierung: 2025-01-21 18:40:46 UTC
 @author: Helena, Katja
 """
 
@@ -10,8 +10,8 @@ import os
 import dash
 from dash import dcc, html, Input, Output, State, dash_table
 import pandas as pd
-import plotly.graph_objects as go
 import plotly.express as px
+import plotly.graph_objects as go
 from datetime import date
 import uuid
 import webbrowser
@@ -75,14 +75,14 @@ def expand_abwesenheiten(df: pd.DataFrame) -> pd.DataFrame:
 
 def generate_figures_from_expanded(expanded_df: pd.DataFrame):
     """
-    Erzeugt 3 Plotly-Figuren (Grund-, Wochentag-, Monatstrends)
+    Erzeugt 4 Plotly-Figuren (Grund-, Wochentag-, Monatstrends und Statistik-Liniendiagramm)
     aus dem "expandierten" DataFrame in deutscher Sprache.
     """
     if expanded_df.empty:
         dummy = px.bar(title="Keine Daten verfügbar")
-        return dummy, dummy, dummy
+        return dummy, dummy, dummy, dummy
 
-    # Grundtrends (unverändert)
+    # Grundtrends
     grund_trends = expanded_df.groupby("Grund")["Datum"].count().reset_index(name="Tage")
     grund_figure = px.bar(
         grund_trends, x="Grund", y="Tage", color="Grund",
@@ -90,7 +90,7 @@ def generate_figures_from_expanded(expanded_df: pd.DataFrame):
     )
     grund_figure.update_layout(legend_title_text="Abwesenheitsgrund")
 
-    # Wochentagtrends (unverändert)
+    # Wochentagtrends
     wochentag_trends = expanded_df.groupby(["Wochentag", "Grund"])["Datum"].count().reset_index(name="Tage")
     wochentag_trends["sort_index"] = wochentag_trends["Wochentag"].apply(lambda x: WOCHENTAGE.index(x))
     wochentag_trends = wochentag_trends.sort_values(["sort_index", "Grund"])
@@ -128,7 +128,7 @@ def generate_figures_from_expanded(expanded_df: pd.DataFrame):
                     )
                 )
 
-    # Konfiguriere das Layout
+    # Konfiguriere das Layout für das Monatsdiagramm
     monat_figure.update_layout(
         title="Abwesenheitstrends nach Monat und Grund",
         barmode="group",
@@ -145,20 +145,158 @@ def generate_figures_from_expanded(expanded_df: pd.DataFrame):
         )
     )
 
-    return grund_figure, wochentag_figure, monat_figure
+   # Verbesserte statistische Berechnung
+    # Zuerst erstellen wir einen vollständigen Datumsbereich für das gesamte Jahr
+    if not expanded_df.empty:
+        min_date = expanded_df["Datum"].min()
+        max_date = expanded_df["Datum"].max()
+        all_dates = pd.date_range(start=min_date, end=max_date, freq='D')
+        
+        # Erstelle ein DataFrame mit allen Tagen
+        all_days_df = pd.DataFrame({'Datum': all_dates})
+        all_days_df['Monat'] = all_days_df['Datum'].dt.month.map(monat_map)
+        
+        # Zähle Abwesenheiten pro Tag
+        daily_absences = (
+            expanded_df.groupby(['Datum'])
+            .size()
+            .reset_index(name='Anzahl_Abwesenheiten')
+        )
+        
+        # Füge die Abwesenheiten dem all_days_df hinzu
+        all_days_df = all_days_df.merge(
+            daily_absences, 
+            on='Datum', 
+            how='left'
+        )
+        all_days_df['Anzahl_Abwesenheiten'] = all_days_df['Anzahl_Abwesenheiten'].fillna(0)
+        
+        # Berechne die Statistiken
+        stats_df = (
+            all_days_df.groupby('Monat')
+            .agg({
+                'Anzahl_Abwesenheiten': [
+                    ('Durchschnitt', 'mean'),
+                    ('Std', 'std'),
+                    ('Max', 'max'),
+                    ('Min', 'min'),
+                    ('Tage_mit_Abwesenheit', lambda x: (x > 0).sum()),
+                    ('Tage_gesamt', 'count')
+                ]
+            })
+        )
+        
+        stats_df.columns = stats_df.columns.droplevel(0)
+        stats_df = stats_df.reset_index()
+        
+        # Behandle NaN-Werte in der Standardabweichung
+        stats_df['Std'] = stats_df['Std'].fillna(0)
+        
+        # Füge zusätzliche Informationen hinzu
+        stats_df['Abwesenheitsquote'] = (stats_df['Tage_mit_Abwesenheit'] / stats_df['Tage_gesamt'] * 100).round(1)
+        
+        # Sortiere die Monate in der richtigen Reihenfolge
+        stats_df['Monat_Sort'] = stats_df['Monat'].map(lambda x: MONATE.index(x))
+        stats_df = stats_df.sort_values('Monat_Sort')
+        
+        # Erstelle das Liniendiagramm
+        statistik_figure = go.Figure()
+        
+        # Füge die Hauptlinie (Durchschnitt) hinzu
+        statistik_figure.add_trace(
+            go.Scatter(
+                name='Durchschnittliche Abwesenheiten pro Tag',
+                x=stats_df['Monat'],
+                y=stats_df['Durchschnitt'],
+                line=dict(color='rgb(31, 119, 180)', width=2),
+                mode='lines+markers'
+            )
+        )
+        
+        # Füge Minimum und Maximum als gestrichelte Linien hinzu
+        statistik_figure.add_trace(
+            go.Scatter(
+                name='Maximum pro Tag',
+                x=stats_df['Monat'],
+                y=stats_df['Max'],
+                line=dict(color='rgba(255, 0, 0, 0.5)', dash='dash'),
+                mode='lines'
+            )
+        )
+        
+        statistik_figure.add_trace(
+            go.Scatter(
+                name='Minimum pro Tag',
+                x=stats_df['Monat'],
+                y=stats_df['Min'],
+                line=dict(color='rgba(0, 255, 0, 0.5)', dash='dash'),
+                mode='lines'
+            )
+        )
+        
+        # Füge den Konfidenzbereich hinzu (±1 Standardabweichung)
+        statistik_figure.add_trace(
+            go.Scatter(
+                name='±1 Standardabweichung',
+                x=stats_df['Monat'].tolist() + stats_df['Monat'].tolist()[::-1],
+                y=(stats_df['Durchschnitt'] + stats_df['Std']).tolist() + 
+                  (stats_df['Durchschnitt'] - stats_df['Std']).tolist()[::-1],
+                fill='toself',
+                fillcolor='rgba(31, 119, 180, 0.2)',
+                line=dict(color='rgba(255,255,255,0)'),
+                hoverinfo='skip',
+                showlegend=True
+            )
+        )
+        
+        # Füge detaillierte Annotations für die Werte hinzu
+        annotations = []
+        for idx, row in stats_df.iterrows():
+            annotations.append(
+                dict(
+                    x=row['Monat'],
+                    y=row['Durchschnitt'],
+                    text=(f"Ø: {row['Durchschnitt']:.2f}/Tag<br>"
+                          f"σ: {row['Std']:.2f}<br>"
+                          f"Tage mit Abw.: {row['Tage_mit_Abwesenheit']}/{row['Tage_gesamt']}<br>"
+                          f"Quote: {row['Abwesenheitsquote']}%"),
+                    showarrow=True,
+                    arrowhead=7,
+                    ax=0,
+                    ay=-40
+                )
+            )
+        
+        # Update Layout
+        statistik_figure.update_layout(
+            title='Statistische Analyse der Abwesenheiten pro Tag und Monat',
+            xaxis_title='Monat',
+            yaxis_title='Anzahl Abwesenheiten pro Tag',
+            hovermode='x unified',
+            showlegend=True,
+            annotations=annotations,
+            legend=dict(
+                orientation='h',
+                yanchor='bottom',
+                y=1.02,
+                xanchor='right',
+                x=1
+            )
+        )
+    else:
+        statistik_figure = px.line(title="Keine Daten verfügbar")
+
+    return grund_figure, wochentag_figure, monat_figure, statistik_figure
 
 def create_krank_uebersicht_df(df: pd.DataFrame):
     """
     Erzeugt ein DataFrame mit aufsummierten Krank-Fehltagen pro Mitarbeiter
-    und hängt eine "Smiley"-Spalte an (optional).
-    Falls keine "Krank"-Einträge existieren, wird ein leeres DataFrame zurückgegeben.
+    und hängt eine "Smiley"-Spalte an.
     """
     krank_df = df[df["Grund"] == "Krank"]
     if krank_df.empty:
-        # Keine Krank-Einträge => gib leeres DataFrame zurück
         return pd.DataFrame(columns=["Mitarbeiter-ID", "Name", "Summe Krank-Fehltage", "Smiley"])
 
-    # Summe Fehltage
     ma_uebersicht_krank = (
         krank_df
         .groupby(["Mitarbeiter-ID", "Name"])["Fehltage"]
@@ -167,7 +305,6 @@ def create_krank_uebersicht_df(df: pd.DataFrame):
         .rename(columns={"Fehltage": "Summe Krank-Fehltage"})
     )
 
-    # Optionale Smileys hinzufügen:
     def get_smiley(tage):
         if tage <= 10:
             return "😄"
@@ -182,13 +319,16 @@ def create_krank_uebersicht_df(df: pd.DataFrame):
     return ma_uebersicht_krank
 
 # ----------------------------------------------------
-# (C) Vorab Fehltage in erster Tabelle berechnen & initiale Krank-Übersicht
+# (C) Vorab Fehltage berechnen & initiale Krank-Übersicht
 # ----------------------------------------------------
 if not abwesenheiten.empty:
     abwesenheiten["Fehltage"] = (abwesenheiten["Enddatum"] - abwesenheiten["Startdatum"]).dt.days + 1
 
-# Jetzt schon die Krank-Übersicht berechnen
 initial_krank_uebersicht_df = create_krank_uebersicht_df(abwesenheiten)
+
+# Initiale Diagramme erstellen
+expanded_initial = expand_abwesenheiten(abwesenheiten)
+grund_fig_init, wochentag_fig_init, monat_fig_init, statistik_fig_init = generate_figures_from_expanded(expanded_initial)
 
 # ----------------------------------------------------
 # (D) Dash-App
@@ -206,10 +346,6 @@ global_style = {
 
 abwesenheitsgruende = ["Krank", "Urlaub", "Persönliche Gründe", "Fortbildung"]
 
-# Diagramme vorinitialisieren
-expanded_initial = expand_abwesenheiten(abwesenheiten)
-grund_fig_init, wochentag_fig_init, monat_fig_init = generate_figures_from_expanded(expanded_initial)
-
 app.layout = html.Div(
     style={"backgroundColor": global_style["backgroundColor"], "padding": "20px", "maxWidth": "1200px", "margin": "auto"},
     children=[
@@ -219,7 +355,7 @@ app.layout = html.Div(
             style={"textAlign": "center", "color": "#0056b3", "fontFamily": global_style["fontFamily"]},
         ),
         html.H4(
-            "Dieses Dashboard gehört zum Projekt FHD 2025 Modul Wirtschaftsinformatik, erstellt von Helena Mustermann und Katja Eppendorfer",
+            "Dieses Dashboard gehört zum Projekt FHD 2025 Modul Wirtschaftsinformatik, erstellt von Helena Baranowsky und Katja Eppendorfer",
             style={"textAlign": "center", "color": "#0056b3"},
         ),
 
@@ -361,7 +497,7 @@ app.layout = html.Div(
             ],
         ),
 
-        # Krank-Übersicht: bereits beim Start befüllt
+        # Krank-Übersicht
         html.Div(
             style={
                 "backgroundColor": "#ffffff",
@@ -382,7 +518,6 @@ app.layout = html.Div(
                         {"name": "Smiley",                  "id": "Smiley"},
                     ],
                     style_table={"overflowX": "auto"},
-                    # Beim Start: bereits befüllt
                     data=initial_krank_uebersicht_df.to_dict("records") if not initial_krank_uebersicht_df.empty else []
                 ),
             ],
@@ -396,12 +531,29 @@ app.layout = html.Div(
                 "borderRadius": "8px",
                 "boxShadow": "0 2px 4px rgba(0, 0, 0, 0.1)",
                 "padding": "20px",
+                "marginBottom": "20px",
             },
             children=[
                 html.H3("Abwesenheitstrends", style={"color": "#0056b3"}),
                 dcc.Graph(id="abwesenheit_trends", figure=grund_fig_init),
                 dcc.Graph(id="wochentag_trends", figure=wochentag_fig_init),
                 dcc.Graph(id="monat_trends", figure=monat_fig_init),
+            ],
+        ),
+
+        # Statistik-Diagramm
+        html.Div(
+            style={
+                "backgroundColor": "#ffffff",
+                "border": "1px solid #ddd",
+                "borderRadius": "8px",
+                "boxShadow": "0 2px 4px rgba(0, 0, 0, 0.1)",
+                "padding": "20px",
+                "marginTop": "20px",
+            },
+            children=[
+                html.H3("Statistische Analyse", style={"color": "#0056b3"}),
+                dcc.Graph(id="statistik_trends", figure=statistik_fig_init),
             ],
         ),
     ],
@@ -418,17 +570,16 @@ def toggle_anderen_grund_feld(grund):
         return {"display": "block", "width": "100%"}
     return {"display": "none"}
 
-# ----------------------------------------------------
 # Callback: Neue Abwesenheit hinzufügen & aktualisieren
-# ----------------------------------------------------
 @app.callback(
     [
         Output("abwesenheit_rueckmeldung", "children"),
         Output("abwesenheit_tabelle", "data"),
-        Output("ma_uebersicht_krank_tabelle", "data"),  # Tabelle aktualisieren
+        Output("ma_uebersicht_krank_tabelle", "data"),
         Output("abwesenheit_trends", "figure"),
         Output("wochentag_trends", "figure"),
         Output("monat_trends", "figure"),
+        Output("statistik_trends", "figure"),
     ],
     Input("abwesenheit_hinzufuegen", "n_clicks"),
     [
@@ -443,12 +594,12 @@ def toggle_anderen_grund_feld(grund):
 def abwesenheit_hinzufuegen(n_clicks, name, start_datum, end_datum, grund, anderer_grund):
     global abwesenheiten
 
-    # Validierung
     if not name or not start_datum or not end_datum or not grund:
         return (
             "Alle Felder müssen ausgefüllt werden!",
             abwesenheiten.to_dict("records"),
             [],
+            px.bar(title="Keine Daten verfügbar"),
             px.bar(title="Keine Daten verfügbar"),
             px.bar(title="Keine Daten verfügbar"),
             px.bar(title="Keine Daten verfügbar"),
@@ -464,12 +615,12 @@ def abwesenheit_hinzufuegen(n_clicks, name, start_datum, end_datum, grund, ander
             px.bar(title="Keine Daten verfügbar"),
             px.bar(title="Keine Daten verfügbar"),
             px.bar(title="Keine Daten verfügbar"),
+            px.bar(title="Keine Daten verfügbar"),
         )
 
     if grund == "Andere":
         grund = anderer_grund
 
-    # ID wiederverwenden, falls Name schon existiert
     existing_row = abwesenheiten[abwesenheiten["Name"] == name].head(1)
     if not existing_row.empty:
         mitarbeiter_id = existing_row["Mitarbeiter-ID"].iloc[0]
@@ -493,17 +644,18 @@ def abwesenheit_hinzufuegen(n_clicks, name, start_datum, end_datum, grund, ander
     # Neue Krank-Übersicht erzeugen
     updated_krank_uebersicht_df = create_krank_uebersicht_df(abwesenheiten)
 
-    # Diagramme
+    # Diagramme aktualisieren
     expanded_df = expand_abwesenheiten(abwesenheiten)
-    grund_fig, wochentag_fig, monat_fig = generate_figures_from_expanded(expanded_df)
+    grund_fig, wochentag_fig, monat_fig, statistik_fig = generate_figures_from_expanded(expanded_df)
 
     return (
         "Abwesenheit erfolgreich hinzugefügt!",
-        abwesenheiten.to_dict("records"),  # 1. Tabelle
-        updated_krank_uebersicht_df.to_dict("records"),  # Krank-Tabelle
+        abwesenheiten.to_dict("records"),
+        updated_krank_uebersicht_df.to_dict("records"),
         grund_fig,
         wochentag_fig,
-        monat_fig
+        monat_fig,
+        statistik_fig
     )
 
 # CSV-Download
