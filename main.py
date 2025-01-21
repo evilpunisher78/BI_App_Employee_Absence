@@ -89,25 +89,34 @@ def generate_figures_from_expanded(expanded_df: pd.DataFrame):
     )
     grund_figure.update_layout(legend_title_text="Abwesenheitsgrund")
 
-    # Wochentagtrends
-    wochentag_trends = expanded_df.groupby("Wochentag")["Datum"].count().reset_index(name="Tage")
+    # Wochentagtrends (pro Wochentag und Grund)
+    wochentag_trends = expanded_df.groupby(["Wochentag", "Grund"])["Datum"].count().reset_index(name="Tage")
+    # Sortierung entsprechend WOCHENTAGE-Liste
     wochentag_trends["sort_index"] = wochentag_trends["Wochentag"].apply(lambda x: WOCHENTAGE.index(x))
-    wochentag_trends = wochentag_trends.sort_values("sort_index")
+    wochentag_trends = wochentag_trends.sort_values(["sort_index", "Grund"])
     wochentag_figure = px.bar(
-        wochentag_trends, x="Wochentag", y="Tage", color="Wochentag",
-        title="Abwesenheitstrends nach Wochentag (deutsch)"
+        wochentag_trends,
+        x="Wochentag",
+        y="Tage",
+        color="Grund",
+        barmode="group",
+        title="Abwesenheitstrends nach Wochentag und Grund"
     )
-    wochentag_figure.update_layout(legend_title_text="Wochentage")
+    wochentag_figure.update_layout(legend_title_text="Abwesenheitsgrund")
 
-    # Monatstrends
-    monat_trends = expanded_df.groupby("Monat")["Datum"].count().reset_index(name="Tage")
+    # Monatstrends (pro Monat und Grund)
+    monat_trends = expanded_df.groupby(["Monat", "Grund"])["Datum"].count().reset_index(name="Tage")
     monat_trends["sort_index"] = monat_trends["Monat"].apply(lambda m: MONATE.index(m))
-    monat_trends = monat_trends.sort_values("sort_index")
+    monat_trends = monat_trends.sort_values(["sort_index", "Grund"])
     monat_figure = px.bar(
-        monat_trends, x="Monat", y="Tage", color="Monat",
-        title="Abwesenheitstrends nach Monat (deutsch)"
+        monat_trends,
+        x="Monat",
+        y="Tage",
+        color="Grund",
+        barmode="group",
+        title="Abwesenheitstrends nach Monat und Grund"
     )
-    monat_figure.update_layout(legend_title_text="Monate")
+    monat_figure.update_layout(legend_title_text="Abwesenheitsgrund")
 
     return grund_figure, wochentag_figure, monat_figure
 
