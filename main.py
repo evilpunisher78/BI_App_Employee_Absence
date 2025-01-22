@@ -468,28 +468,61 @@ app.layout = html.Div(
                 html.Div(
                     style={"marginTop": "20px", "display": "flex", "gap": "20px"},
                     children=[
-                        html.Button(
-                            "CSV herunterladen",
-                            id="download_csv",
-                            style={
-                                "backgroundColor": "#0056b3",
-                                "color": "#fff",
-                                "border": "none",
-                                "borderRadius": "4px",
-                                "padding": "10px 15px"
-                            }
-                        ),
-                        html.Button(
-                            "Excel herunterladen",
-                            id="download_excel",
-                            style={
-                                "backgroundColor": "#0056b3",
-                                "color": "#fff",
-                                "border": "none",
-                                "borderRadius": "4px",
-                                "padding": "10px 15px"
-                            }
-                        )
+                        html.Div(
+                            style={"marginTop": "20px", "marginBottom": "20px"},
+                            children=[
+                                html.H4("Zeitraum für Export auswählen:", style={"color": "#0056b3", "marginBottom": "10px"}),
+                                html.Div(
+                                    style={"display": "flex", "gap": "20px", "alignItems": "center"},
+                                    children=[
+                                        html.Div([
+                                            html.Label("Von:", style={"fontWeight": "bold"}),
+                                            dcc.DatePickerSingle(
+                                                id="export_start_datum",
+                                                date=date.today(),
+                                                style={"width": "100%"}
+                                            ),
+                                        ]),
+                                        html.Div([
+                                            html.Label("Bis:", style={"fontWeight": "bold"}),
+                                            dcc.DatePickerSingle(
+                                                id="export_end_datum",
+                                                date=date.today(),
+                                                style={"width": "100%"}
+                                            ),
+                                        ]),
+                                    ]
+                                ),
+                                html.Div(
+                                    style={"marginTop": "20px", "display": "flex", "gap": "20px"},
+                                    children=[
+                                        html.Button(
+                                            "CSV herunterladen",
+                                            id="download_csv",
+                                            style={
+                                                "backgroundColor": "#0056b3",
+                                                "color": "#fff",
+                                                "border": "none",
+                                                "borderRadius": "4px",
+                                                "padding": "10px 15px"
+                                            }
+                                        ),
+                                        html.Button(
+                                            "Excel herunterladen",
+                                            id="download_excel",
+                                            style={
+                                                "backgroundColor": "#0056b3",
+                                                "color": "#fff",
+                                                "border": "none",
+                                                "borderRadius": "4px",
+                                                "padding": "10px 15px"
+                                            }
+                                        )
+                                    ]
+                                ),
+                                html.Div(id="export_error_message", style={"color": "red", "marginTop": "10px"}),
+                            ]
+                        ),                        
                     ]
                 ),
                 dcc.Download(id="csv_download"),
@@ -658,28 +691,81 @@ def abwesenheit_hinzufuegen(n_clicks, name, start_datum, end_datum, grund, ander
         statistik_fig
     )
 
-# CSV-Download
+# Aktualisierte Callback-Funktionen für den Download:
 @app.callback(
-    Output("csv_download", "data"),
-    Input("download_csv", "n_clicks"),
+    [Output("csv_download", "data"),
+     Output("export_error_message", "children")],
+    [Input("download_csv", "n_clicks")],
+    [State("export_start_datum", "date"),
+     State("export_end_datum", "date")],
     prevent_initial_call=True
 )
-def download_csv(n_clicks):
-    return dcc.send_data_frame(abwesenheiten.to_csv, "abwesenheitsaufzeichnungen.csv", index=False, sep=";")
+def download_csv(n_clicks, start_datum, end_datum):
+    if n_clicks is None:
+        raise dash.exceptions.PreventUpdate
 
-# Excel-Download
+    if not start_datum or not end_datum:
+        return None, "Bitte wählen Sie ein Start- und Enddatum aus."
+
+    start_dt = pd.to_datetime(start_datum)
+    end_dt = pd.to_datetime(end_datum)
+
+    if start_dt > end_dt:
+        return None, "Das Startdatum darf nicht nach dem Enddatum liegen!"
+
+    # Filtere die Daten nach dem gewählten Zeitraum
+    filtered_df = abwesenheiten[
+        (abwesenheiten["Startdatum"] >= start_dt) &
+        (abwesenheiten["Enddatum"] <= end_dt)
+    ]
+
+    if filtered_df.empty:
+        return None, "Keine Daten im ausgewählten Zeitraum gefunden!"
+
+    return dcc.send_data_frame(
+        filtered_df.to_csv,
+        "abwesenheitsaufzeichnungen.csv",
+        index=False,
+        sep=";"
+    ), ""
+
 @app.callback(
-    Output("excel_download", "data"),
-    Input("download_excel", "n_clicks"),
+    [Output("excel_download", "data"),
+     Output("export_error_message", "children", allow_duplicate=True)],
+    [Input("download_excel", "n_clicks")],
+    [State("export_start_datum", "date"),
+     State("export_end_datum", "date")],
     prevent_initial_call=True
 )
-def download_excel(n_clicks):
-    buffer = io.BytesIO()
-    with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
-        abwesenheiten.to_excel(writer, index=False, sheet_name="Abwesenheiten")
-    buffer.seek(0)
-    encoded_excel = base64.b64encode(buffer.read()).decode()
-    return dict(content=encoded_excel, filename="abwesenheitsaufzeichnungen.xlsx")
+def download_excel(n_clicks, start_datum, end_datum):
+    if n_clicks is None:
+        raise dash.exceptions.PreventUpdate
+
+    if not start_datum or not end_datum:
+        return None, "Bitte wählen Sie ein Start- und Enddatum aus."
+
+    start_dt = pd.to_datetime(start_datum)
+    end_dt = pd.to_datetime(end_datum)
+
+    if start_dt > end_dt:
+        return None, "Das Startdatum darf nicht nach dem Enddatum liegen!"
+
+    # Filtere die Daten nach dem gewählten Zeitraum
+    filtered_df = abwesenheiten[
+        (abwesenheiten["Startdatum"] >= start_dt) &
+        (abwesenheiten["Enddatum"] <= end_dt)
+    ]
+
+    if filtered_df.empty:
+        return None, "Keine Daten im ausgewählten Zeitraum gefunden!"
+
+    return dcc.send_data_frame(
+        filtered_df.to_excel,
+        "abwesenheitsaufzeichnungen.xlsx",
+        sheet_name="Abwesenheiten",
+        index=False,
+        engine='openpyxl'
+    ), ""
 
 if __name__ == "__main__":
     webbrowser.open("http://127.0.0.1:8050/")
