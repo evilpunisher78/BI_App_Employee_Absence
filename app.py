@@ -109,6 +109,8 @@ app.layout = html.Div(
                     columns=[{"name": c, "id": c} for c in abwesenheiten.columns],
                     style_table={"overflowX": "auto"},
                     data=abwesenheiten.to_dict("records"),
+                    editable=True,
+                    row_deletable=True,
                 ),
                 html.Div(
                     style={"marginTop": "20px"},
@@ -290,3 +292,41 @@ def download_excel(n_clicks, start_datum, end_datum):
         index=False,
         engine="openpyxl",
     ), ""
+
+
+@app.callback(
+    [
+        Output("abwesenheit_tabelle", "data"),
+        Output("ma_uebersicht_krank_tabelle", "data"),
+        Output("abwesenheit_trends", "figure"),
+        Output("wochentag_trends", "figure"),
+        Output("monat_trends", "figure"),
+        Output("statistik_trends", "figure"),
+    ],
+    Input("abwesenheit_tabelle", "data_timestamp"),
+    State("abwesenheit_tabelle", "data"),
+    prevent_initial_call=True,
+)
+def update_from_table(timestamp, rows):
+    """Aktualisiert Daten und Visualisierungen nach Bearbeiten oder Löschen."""
+    global abwesenheiten
+    abwesenheiten = pd.DataFrame(rows)
+    if not abwesenheiten.empty:
+        abwesenheiten["Startdatum"] = pd.to_datetime(abwesenheiten["Startdatum"]).dt.normalize()
+        abwesenheiten["Enddatum"] = pd.to_datetime(abwesenheiten["Enddatum"]).dt.normalize()
+        abwesenheiten["Fehltage"] = (
+            abwesenheiten["Enddatum"] - abwesenheiten["Startdatum"]
+        ).dt.days + 1
+    abwesenheiten.to_csv(CSV_DATEI, sep=";", index=False)
+    expanded_df = expand_abwesenheiten(abwesenheiten)
+    updated_krank_df = create_krank_uebersicht(abwesenheiten)
+    grund_fig, wochentag_fig, monat_fig, statistik_fig = generate_figures(expanded_df)
+    return (
+        abwesenheiten.to_dict("records"),
+        updated_krank_df.to_dict("records"),
+        grund_fig,
+        wochentag_fig,
+        monat_fig,
+        statistik_fig,
+    )
+
